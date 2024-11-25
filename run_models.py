@@ -5,8 +5,10 @@
 
 import os
 import sys
+# import matplotlib
+# matplotlib.use('Agg')
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('TKAgg')
 import matplotlib.pyplot
 import matplotlib.pyplot as plt
 
@@ -16,7 +18,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from random import SystemRandom
-from sklearn import model_selection
+#from sklearn import model_selection
 
 import torch
 import torch.nn as nn
@@ -32,8 +34,7 @@ from lib.create_latent_ode_model import create_LatentODE_model
 from lib.parse_datasets import parse_datasets
 from lib.ode_func import ODEFunc, ODEFunc_w_Poisson
 from lib.diffeq_solver import DiffeqSolver
-from mujoco_physics import HopperPhysics
-
+#from lib.clustering import *
 from lib.utils import compute_loss_all_batches
 
 # Generative model for noisy data based on ODE
@@ -43,12 +44,19 @@ parser.add_argument('--niters', type=int, default=300)
 parser.add_argument('--lr',  type=float, default=1e-2, help="Starting learning rate.")
 parser.add_argument('-b', '--batch-size', type=int, default=50)
 parser.add_argument('--viz', action='store_true', help="Show plots while training")
+parser.add_argument("--cluster_method", type = str, help = "Clustering method")
 
 parser.add_argument('--save', type=str, default='experiments/', help="Path for save checkpoints")
 parser.add_argument('--load', type=str, default=None, help="ID of the experiment to load for evaluation. If None, run a new experiment.")
 parser.add_argument('-r', '--random-seed', type=int, default=1991, help="Random_seed")
-
+parser.add_argument('--fold', type=int, default=None, help="Current fold number for cross-validation")
 parser.add_argument('--dataset', type=str, default='periodic', help="Dataset to load. Available: physionet, activity, hopper, periodic")
+parser.add_argument('--train_embeddings', type=str, default=None, help="train embeddings filepath to load")
+parser.add_argument('--train_labels', type=str, default=None, help="train labels filepath to load")
+parser.add_argument('--test_embeddings', type=str, default=None, help="test embeddings filepath to load")
+parser.add_argument('--test_labels', type=str, default=None, help="test labels filepath to load")
+parser.add_argument('--num_classes', type=int, default=None, help="Number of unique labels in the dataset")
+parser.add_argument('--keypoints', type=str, default=None, help="keypoints filepath to load")
 parser.add_argument('-s', '--sample-tp', type=float, default=None, help="Number of time points to sub-sample."
 	"If > 1, subsample exact number of points. If the number is in [0,1], take a percentage of available points per time series. If None, do not subsample")
 
@@ -233,10 +241,52 @@ if __name__ == '__main__':
 	##################################################################
 	
 	#Load checkpoint and evaluate the model
-	if args.load is not None:
-		utils.get_ckpt_model(ckpt_path, model, device)
-		exit()
 
+
+	if args.load is not None:
+		log_path = "logs/" + file_name + "_" + str(experimentID) + ".log"
+		if not os.path.exists("logs/"):
+			utils.makedirs("logs/")
+		logger = utils.get_logger(logpath=log_path, filepath=os.path.abspath(__file__))
+		logger.info(input_command)
+		utils.get_ckpt_model(ckpt_path, model, device)
+		with torch.no_grad():
+			test_res, all_sol_y, all_frame_ids, gt_labels, predicted_labels = compute_loss_all_batches(
+				model,
+				data_obj["test_dataloader"],
+				args,
+				n_batches=data_obj["n_test_batches"],
+				experimentID=experimentID,
+				device=device,
+				n_traj_samples=1,
+				kl_coef=1.0  # Adjust this coefficient as needed
+			)
+
+			# Log evaluation results
+			message = 'Evaluation [Test seq (cond on sampled tp)] | Loss {:.6f} | Likelihood {:.6f} | KL fp {:.4f} | FP STD {:.4f}|'.format(
+				test_res["loss"].detach(),
+				test_res["likelihood"].detach(),
+				test_res["kl_first_p"],
+				test_res["std_first_p"]
+			)
+			logger.info("Experiment " + str(experimentID))
+			logger.info(message)
+			logger.info("Test loss: {:.6f}".format(test_res["loss"].detach()))
+			if "auc" in test_res:
+				logger.info("Classification AUC (TEST): {:.4f}".format(test_res["auc"]))
+			if "mse" in test_res:
+				logger.info("Test MSE: {:.4f}".format(test_res["mse"]))
+			if "accuracy" in test_res:
+				logger.info("Classification accuracy (TEST): {:.4f}".format(test_res["accuracy"]))
+			if "pois_likelihood" in test_res:
+				logger.info("Poisson likelihood: {}".format(test_res["pois_likelihood"]))
+			if "ce_loss" in test_res:
+				logger.info("CE loss: {}".format(test_res["ce_loss"]))
+
+			#save sol_y and frame ids
+			np.save("/root/SSL_behavior/latent ode saved/sol_y_normalized.npy", np.concatenate(all_sol_y, axis=0))
+			np.save("/root/SSL_behavior/latent ode saved/frame_ids_normalized.npy", np.concatenate(all_frame_ids, axis=0))
+		exit()
 	##################################################################
 	# Training
 
@@ -249,6 +299,12 @@ if __name__ == '__main__':
 	optimizer = optim.Adamax(model.parameters(), lr=args.lr)
 
 	num_batches = data_obj["n_train_batches"]
+	train_loss = []
+	test_loss = []
+	test_mse = []
+	train_acc = []
+	test_acc = []
+	clf_acc = []
 
 	for itr in range(1, num_batches * (args.niters + 1)):
 		optimizer.zero_grad()
@@ -261,32 +317,103 @@ if __name__ == '__main__':
 			kl_coef = (1-0.99** (itr // num_batches - wait_until_kl_inc))
 
 		batch_dict = utils.get_next_batch(data_obj["train_dataloader"])
-		train_res = model.compute_all_losses(batch_dict, n_traj_samples = 3, kl_coef = kl_coef)
+		#do clustering
+		#nmi = cluster_latent_states(model, batch_dict, args.cluster_method, n_traj_samples = 1)
+
+		#nmi_list.append(nmi)
+
+
+		train_res = model.compute_all_losses(batch_dict, n_traj_samples = 1, kl_coef = kl_coef)
 		train_res["loss"].backward()
 		optimizer.step()
+
 
 		n_iters_to_viz = 1
 		if itr % (n_iters_to_viz * num_batches) == 0:
 			with torch.no_grad():
+				#test_batch_dict = utils.get_next_batch(data_obj["test_dataloader"])
 
-				test_res = compute_loss_all_batches(model, 
+				#compute nmi
+				#nmi = cluster_latent_states(model, test_batch_dict, args.cluster_method, n_traj_samples=1)
+
+				test_res, all_sol_y, all_frame_ids, gt_labels, predicted_labels = compute_loss_all_batches(model,
 					data_obj["test_dataloader"], args,
 					n_batches = data_obj["n_test_batches"],
 					experimentID = experimentID,
 					device = device,
-					n_traj_samples = 3, kl_coef = kl_coef)
+					n_traj_samples = 1, kl_coef = kl_coef)
+
+				# sol_y = all_sol_y[0][0].reshape(-1,32)
+				# frame_ids = all_frame_ids[0].reshape(-1)
+				# z1 = sol_y[:, 0]
+				# z2 = sol_y[:, 1]
+				#test_labels = np.load('/root/SSL_behavior/data/calms21 embeddings/loaded_test_behaviors.npy')
+				# labels = test_labels[frame_ids]
+				# # Plot the first and second dimensions of sol_y
+				# plt.figure(figsize=(10, 6))
+				# plt.scatter(z1, z2, c=labels, cmap='viridis', s=5)
+				# plt.colorbar(label='Frame IDs')
+				# plt.xlabel('First Dimension of Latent z')
+				# plt.ylabel('Second Dimension of Latent z')
+				# plt.title('Visualization of First and Second Dimensions of Latent z')
+				# plt.grid(True)
+				# epoch = itr//num_batches
+				# s = 'kp plot epoch ' + str(epoch)
+				# plt.savefig(s)
+
+				# sol_y_file = f"/root/SSL_behavior/latent ode saved 64 - 32 v5/sol_y_normalized_epoch{epoch}.npy"
+				# frame_ids_file =  f"/root/SSL_behavior/latent ode saved 64 - 32 v5/frame_ids_normalized_epoch{epoch}.npy"
+				# np.save(sol_y_file, np.concatenate(all_sol_y, axis=0))
+				# np.save(frame_ids_file,
+				# 		np.concatenate(all_frame_ids, axis=0))
+
+				train_loss.append(train_res["loss"])
+				test_loss.append(test_res["loss"])
+				if args.classif:
+					test_mse.append(test_res["ce_loss"])
+				else:
+					test_mse.append(test_res["mse"])
+				train_loss_cpu = [loss.cpu().detach().numpy() for loss in train_loss]
+				test_loss_cpu = [loss.cpu().detach().numpy() for loss in test_loss]
+				test_mse_cpu = [mse.cpu().detach().numpy() for mse in test_mse]
+				iterations = range(1, len(test_loss_cpu) + 1)
+				plt.figure(figsize=(10, 6))
+				plt.plot(iterations, train_loss_cpu, label='Train Loss', color='blue')
+
+				if args.classif:
+					plt.plot(iterations, test_mse_cpu, label='Test loss', color='green')
+				else:
+					plt.plot(iterations, test_mse_cpu, label='Test MSE', color='green')
+				plt.title('Train and Test CE Loss Over Time')
+				plt.xlabel('Iteration')
+				plt.ylabel('Loss')
+				plt.legend()
+				plt.grid(True)
+				plt.savefig(f'{args.dataset} losses')
+				plt.close()
+				if "accuracy" in test_res:
+					test_acc.append(test_res["accuracy"])
+					iterations = range(1, len(test_acc) + 1)
+					plt.figure(figsize=(10, 6))
+					plt.plot(iterations, test_acc, label='Test Acc', color='orange')
+					plt.title('Test Acc Over Time')
+					plt.xlabel('Iteration')
+					plt.ylabel('Accuracy')
+					plt.grid(True)
+					plt.savefig(f'{args.dataset} accuracies')
+					plt.close()
 
 				message = 'Epoch {:04d} [Test seq (cond on sampled tp)] | Loss {:.6f} | Likelihood {:.6f} | KL fp {:.4f} | FP STD {:.4f}|'.format(
 					itr//num_batches, 
-					test_res["loss"].detach(), test_res["likelihood"].detach(), 
+					test_res["loss"].detach(), test_res["likelihood"].detach(),
 					test_res["kl_first_p"], test_res["std_first_p"])
-		 	
 				logger.info("Experiment " + str(experimentID))
 				logger.info(message)
 				logger.info("KL coef: {}".format(kl_coef))
 				logger.info("Train loss (one batch): {}".format(train_res["loss"].detach()))
 				logger.info("Train CE loss (one batch): {}".format(train_res["ce_loss"].detach()))
-				
+
+
 				if "auc" in test_res:
 					logger.info("Classification AUC (TEST): {:.4f}".format(test_res["auc"]))
 
@@ -294,9 +421,12 @@ if __name__ == '__main__':
 					logger.info("Test MSE: {:.4f}".format(test_res["mse"]))
 
 				if "accuracy" in train_res:
+
 					logger.info("Classification accuracy (TRAIN): {:.4f}".format(train_res["accuracy"]))
 
+
 				if "accuracy" in test_res:
+
 					logger.info("Classification accuracy (TEST): {:.4f}".format(test_res["accuracy"]))
 
 				if "pois_likelihood" in test_res:
@@ -317,7 +447,7 @@ if __name__ == '__main__':
 					test_dict = utils.get_next_batch(data_obj["test_dataloader"])
 
 					print("plotting....")
-					if isinstance(model, LatentODE) and (args.dataset == "periodic"): #and not args.classic_rnn and not args.ode_rnn:
+					if isinstance(model, LatentODE): #and (args.dataset == "periodic"): #and not args.classic_rnn and not args.ode_rnn:
 						plot_id = itr // num_batches // n_iters_to_viz
 						viz.draw_all_plots_one_dim(test_dict, model, 
 							plot_name = file_name + "_" + str(experimentID) + "_{:03d}".format(plot_id) + ".png",
@@ -326,5 +456,21 @@ if __name__ == '__main__':
 	torch.save({
 		'args': args,
 		'state_dict': model.state_dict(),
+		'predicted_labels': train_res['label_predictions']
 	}, ckpt_path)
+
+
+
+	if args.fold is not None:
+		fold_dir = os.path.join(args.save)
+		os.makedirs(fold_dir, exist_ok=True)
+		epoch = itr // num_batches
+		sol_y_file = os.path.join(fold_dir, f"latent_embeddings.npy")
+		#frame_ids_file = os.path.join(fold_dir, f"frame_ids_epoch{epoch}.npy")
+		sol_y = all_sol_y[0][0].reshape(-1, 32)
+		#frame_ids = all_frame_ids[0].reshape(-1)
+		np.save(sol_y_file, sol_y)
+		# np.save(frame_ids_file, frame_ids)
+
+
 
