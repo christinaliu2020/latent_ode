@@ -9,16 +9,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-import lib.utils as utils
-from lib.diffeq_solver import DiffeqSolver
-from generate_timeseries import Periodic_1d
+import latent_ode.lib.utils as utils
+from latent_ode.lib.diffeq_solver import DiffeqSolver
+from latent_ode.generate_timeseries import Periodic_1d
 from torch.distributions import uniform
 
 from torch.utils.data import DataLoader
-from mujoco_physics import HopperPhysics
-from physionet import PhysioNet, variable_time_collate_fn, get_data_min_max
-from person_activity import PersonActivity, variable_time_collate_fn_activity
-
+from latent_ode.embeddings_processing import MouseVideoEmbeddings, variable_time_collate_fn_embeddings, variable_time_collate_fn_embeddings_keypoints
 from sklearn import model_selection
 import random
 
@@ -27,11 +24,17 @@ def parse_datasets(args, device):
 	
 
 	def basic_collate_fn(batch, time_steps, args = args, device = device, data_type = "train"):
-		batch = torch.stack(batch)
+		#batch = torch.stack(batch)
+		batch_vals = torch.stack([item['vals'] for item in batch])
+		if 'frame_ids' in batch[0]:
+			batch_frame_ids = torch.stack([item['frame_ids'] for item in batch])
+		else:
+			batch_frame_ids = None
 		data_dict = {
-			"data": batch, 
+			"data": batch_vals,
 			"time_steps": time_steps}
-
+		if batch_frame_ids is not None:
+			data_dict["frame_ids"] = batch_frame_ids
 		data_dict = utils.split_and_subsample_batch(data_dict, args, data_type = data_type)
 		return data_dict
 
@@ -42,152 +45,128 @@ def parse_datasets(args, device):
 	max_t_extrap = args.max_t / args.timepoints * n_total_tp
 
 	##################################################################
-	# MuJoCo dataset
-	if dataset_name == "hopper":
-		dataset_obj = HopperPhysics(root='data', download=True, generate=False, device = device)
-		dataset = dataset_obj.get_dataset()[:args.n]
-		dataset = dataset.to(device)
 
+	##############################
+	#mouse embeddings dataset
 
-		n_tp_data = dataset[:].shape[1]
+	# noinspection PyPackageRequirements
+	if dataset_name == "mouse_embeddings":
+		#embeddings_file = '/root/SSL_behavior/data/mae_embeddings/train_embeddings_mae.npy'
+		train_embeddings = args.train_embeddings.split(',')
+		train_labels = args.train_labels.split(',')
+		test_embeddings = args.test_embeddings
+		test_labels = args.test_labels
+		#labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
+		#keypoints_file = '/root/SSL_behavior/data/keypoints/loaded_train_kps.npy'
+		keypoints_file = args.keypoints
+		# train_embeddings_file = '/root/SSL_behavior/data/mae_embeddings/train_embeddings_mae.npy'
+		# train_labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
+		# test_embeddings_file = '/root/SSL_behavior/data/mae_embeddings/test_embeddings_mae.npy'
+		# test_labels_file = 'data/calms21 embeddings/loaded_test_behaviors.npy'
+		train_dataset = MouseVideoEmbeddings(train_embeddings, train_labels,
+											 split_sequences=True, do_pca=True,
+											 normalize=True, num_splits=40,
+											 device=device)
+		test_dataset = MouseVideoEmbeddings([test_embeddings], [test_labels],
+											split_sequences=True, do_pca=True,
+											normalize=True, num_splits=40,
+											device=device)
 
-		# Time steps that are used later on for exrapolation
-		time_steps = torch.arange(start=0, end = n_tp_data, step=1).float().to(device)
-		time_steps = time_steps / len(time_steps)
+		batch_size = min(min(len(train_labels) + len(test_labels), args.batch_size), args.n)
 
-		dataset = dataset.to(device)
-		time_steps = time_steps.to(device)
+		# if args.keypoints:
+		# 	train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True,
+		# 								  collate_fn=lambda batch: variable_time_collate_fn_embeddings_keypoints(batch, args, device,
+		# 																							   data_type="train"))
+		# 	test_dataloader = DataLoader(test_data, batch_size=len(test_data), shuffle=False,
+		# 								 collate_fn=lambda batch: variable_time_collate_fn_embeddings_keypoints(batch, args, device,
+		# 																							  data_type="test"))
+		#
+		# 	embed_dim = train_data[0]['vals'].size(-1)
+		# 	keypoint_dim = train_data[0]['keypoints'].size(-1) * train_data[0]['keypoints'].size(-2)
+		# 	input_dim = embed_dim + keypoint_dim
+		# 	labels = np.load(labels_file)
+		# 	n_labels = len(np.unique(labels))
+		# 	#
+		# 	# train_labels = np.load(train_labels_file)
+		# 	# test_labels = np.load(test_labels_file)
+		# 	# all_labels = np.concatenate([train_labels, test_labels])
+		# 	# n_labels = len(np.unique(all_labels))
+		# 	data_objects = {
+		# 		"dataset_obj": dataset_obj,
+		# 		"train_dataloader": utils.inf_generator(train_dataloader),
+		# 		"test_dataloader": utils.inf_generator(test_dataloader),
+		# 		"input_dim": input_dim,
+		# 		"n_train_batches": len(train_dataloader),
+		# 		"n_test_batches": len(test_dataloader),
+		# 		"classif_per_tp": True,
+		# 		"n_labels": n_labels,  # Placeholder, adjust if needed
+		# 		"keypoint_window": 101
+		# 	}
+		#
+		# 	return data_objects
+		train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+									  collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args,
+																								   device,
+																								   data_type="train"))
+		test_dataloader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False,
+									 collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args,
+																								  device,
+																								  data_type="test"))
+		input_dim = train_dataset[0]['vals'].size(-1)
+		n_labels = args.num_classes
+		#
+		# train_labels = np.load(train_labels_file)
+		# test_labels = np.load(test_labels_file)
+		# all_labels = np.concatenate([train_labels, test_labels])
+		# n_labels = len(np.unique(all_labels))
+		data_objects = {
+			"train_dataloader": utils.inf_generator(train_dataloader),
+			"test_dataloader": utils.inf_generator(test_dataloader),
+			"input_dim": input_dim,
+			"n_train_batches": len(train_dataloader),
+			"n_test_batches": len(test_dataloader),
+			"classif_per_tp": True,
+			"n_labels": n_labels  # Placeholder, adjust if needed
+		}
 
-		if not args.extrap:
-			# Creating dataset for interpolation
-			# sample time points from different parts of the timeline, 
-			# so that the model learns from different parts of hopper trajectory
-			n_traj = len(dataset)
-			n_tp_data = dataset.shape[1]
-			n_reduced_tp = args.timepoints
-
-			# sample time points from different parts of the timeline, 
-			# so that the model learns from different parts of hopper trajectory
-			start_ind = np.random.randint(0, high=n_tp_data - n_reduced_tp +1, size=n_traj)
-			end_ind = start_ind + n_reduced_tp
-			sliced = []
-			for i in range(n_traj):
-				  sliced.append(dataset[i, start_ind[i] : end_ind[i], :])
-			dataset = torch.stack(sliced).to(device)
-			time_steps = time_steps[:n_reduced_tp]
-
-		# Split into train and test by the time sequences
-		train_y, test_y = utils.split_train_test(dataset, train_fraq = 0.8)
-
-		n_samples = len(dataset)
-		input_dim = dataset.size(-1)
-
-		batch_size = min(args.batch_size, args.n)
-		train_dataloader = DataLoader(train_y, batch_size = batch_size, shuffle=False,
-			collate_fn= lambda batch: basic_collate_fn(batch, time_steps, data_type = "train"))
-		test_dataloader = DataLoader(test_y, batch_size = n_samples, shuffle=False,
-			collate_fn= lambda batch: basic_collate_fn(batch, time_steps, data_type = "test"))
-		
-		data_objects = {"dataset_obj": dataset_obj, 
-					"train_dataloader": utils.inf_generator(train_dataloader), 
-					"test_dataloader": utils.inf_generator(test_dataloader),
-					"input_dim": input_dim,
-					"n_train_batches": len(train_dataloader),
-					"n_test_batches": len(test_dataloader)}
 		return data_objects
 
-	##################################################################
-	# Physionet dataset
+	if dataset_name == "mouse_keypoints":
+		embeddings_file = 'data/keypoints/loaded_train_kps.npy'
+		labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
 
-	if dataset_name == "physionet":
-		train_dataset_obj = PhysioNet('data/physionet', train=True, 
-										quantization = args.quantization,
-										download=True, n_samples = min(10000, args.n), 
-										device = device)
-		# Use custom collate_fn to combine samples with arbitrary time observations.
-		# Returns the dataset along with mask and time steps
-		test_dataset_obj = PhysioNet('data/physionet', train=False, 
-										quantization = args.quantization,
-										download=True, n_samples = min(10000, args.n), 
-										device = device)
+		dataset_obj = MouseVideoEmbeddings(embeddings_file, labels_file, split_sequences=True, normalize = False, num_splits=20,  device = device)
 
-		# Combine and shuffle samples from physionet Train and physionet Test
-		total_dataset = train_dataset_obj[:len(train_dataset_obj)]
-
-		if not args.classif:
-			# Concatenate samples from original Train and Test sets
-			# Only 'training' physionet samples are have labels. Therefore, if we do classifiction task, we don't need physionet 'test' samples.
-			total_dataset = total_dataset + test_dataset_obj[:len(test_dataset_obj)]
-
-		# Shuffle and split
-		train_data, test_data = model_selection.train_test_split(total_dataset, train_size= 0.8, 
-			random_state = 42, shuffle = True)
-
-		record_id, tt, vals, mask, labels = train_data[0]
-
-		n_samples = len(total_dataset)
-		input_dim = vals.size(-1)
-
-		batch_size = min(min(len(train_dataset_obj), args.batch_size), args.n)
-		data_min, data_max = get_data_min_max(total_dataset)
-
-		train_dataloader = DataLoader(train_data, batch_size= batch_size, shuffle=False, 
-			collate_fn= lambda batch: variable_time_collate_fn(batch, args, device, data_type = "train",
-				data_min = data_min, data_max = data_max))
-		test_dataloader = DataLoader(test_data, batch_size = n_samples, shuffle=False, 
-			collate_fn= lambda batch: variable_time_collate_fn(batch, args, device, data_type = "test",
-				data_min = data_min, data_max = data_max))
-
-		attr_names = train_dataset_obj.params
-		data_objects = {"dataset_obj": train_dataset_obj, 
-					"train_dataloader": utils.inf_generator(train_dataloader), 
-					"test_dataloader": utils.inf_generator(test_dataloader),
-					"input_dim": input_dim,
-					"n_train_batches": len(train_dataloader),
-					"n_test_batches": len(test_dataloader),
-					"attr": attr_names, #optional
-					"classif_per_tp": False, #optional
-					"n_labels": 1} #optional
-		return data_objects
-
-	##################################################################
-	# Human activity dataset
-
-	if dataset_name == "activity":
-		n_samples =  min(10000, args.n)
-		dataset_obj = PersonActivity('data/PersonActivity', 
-							download=True, n_samples =  n_samples, device = device)
-		print(dataset_obj)
-		# Use custom collate_fn to combine samples with arbitrary time observations.
-		# Returns the dataset along with mask and time steps
-
-		# Shuffle and split
-		train_data, test_data = model_selection.train_test_split(dataset_obj, train_size= 0.8, 
-			random_state = 42, shuffle = True)
-
-		train_data = [train_data[i] for i in np.random.choice(len(train_data), len(train_data))]
-		test_data = [test_data[i] for i in np.random.choice(len(test_data), len(test_data))]
-
-		record_id, tt, vals, mask, labels = train_data[0]
-		input_dim = vals.size(-1)
+		# Split into train and test
+		train_size = int(0.8 * len(dataset_obj))
+		test_size = len(dataset_obj) - train_size
+		train_data, test_data = torch.utils.data.random_split(dataset_obj, [train_size, test_size])
 
 		batch_size = min(min(len(dataset_obj), args.batch_size), args.n)
-		train_dataloader = DataLoader(train_data, batch_size= batch_size, shuffle=False, 
-			collate_fn= lambda batch: variable_time_collate_fn_activity(batch, args, device, data_type = "train"))
-		test_dataloader = DataLoader(test_data, batch_size=n_samples, shuffle=False, 
-			collate_fn= lambda batch: variable_time_collate_fn_activity(batch, args, device, data_type = "test"))
 
-		data_objects = {"dataset_obj": dataset_obj, 
-					"train_dataloader": utils.inf_generator(train_dataloader), 
-					"test_dataloader": utils.inf_generator(test_dataloader),
-					"input_dim": input_dim,
-					"n_train_batches": len(train_dataloader),
-					"n_test_batches": len(test_dataloader),
-					"classif_per_tp": True, #optional
-					"n_labels": labels.size(-1)}
+		train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True,
+									  collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args, device,
+																								   data_type="train"))
+		test_dataloader = DataLoader(test_data, batch_size=len(test_data), shuffle=False,
+									 collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args, device,
+																								  data_type="test"))
+
+		input_dim = train_data[0]['vals'].size(-1)
+		labels = np.load(labels_file)
+		n_labels= len(np.unique(labels))
+		data_objects = {
+			"dataset_obj": dataset_obj,
+			"train_dataloader": utils.inf_generator(train_dataloader),
+			"test_dataloader": utils.inf_generator(test_dataloader),
+			"input_dim": input_dim,
+			"n_train_batches": len(train_dataloader),
+			"n_test_batches": len(test_dataloader),
+			"classif_per_tp": True,
+			"n_labels":n_labels
+		}
 
 		return data_objects
-
 	########### 1d datasets ###########
 
 	# Sampling args.timepoints time points in the interval [0, args.max_t]
