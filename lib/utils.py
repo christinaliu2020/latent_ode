@@ -241,7 +241,11 @@ def get_next_batch(dataloader):
 		batch_dict["mask_predicted_data"] = data_dict["mask_predicted_data"][:, non_missing_tp]
 
 	if ("labels" in data_dict) and (data_dict["labels"] is not None):
-		batch_dict["labels"] = data_dict["labels"]
+		batch_dict["labels"] = data_dict["labels"][:, non_missing_tp]
+
+	# Include frame_ids
+	if ("frame_ids" in data_dict) and (data_dict["frame_ids"] is not None):
+		batch_dict["frame_ids"] = data_dict["frame_ids"][:, non_missing_tp]
 
 	batch_dict["mode"] = data_dict["mode"]
 	return batch_dict
@@ -321,7 +325,8 @@ def get_dict_template():
 			"tp_to_predict": None,
 			"observed_mask": None,
 			"mask_predicted_data": None,
-			"labels": None
+			"labels": None,
+			"frame_ids":None
 			}
 
 
@@ -423,6 +428,9 @@ def split_data_interp(data_dict):
 
 	if ("labels" in data_dict) and (data_dict["labels"] is not None):
 		split_dict["labels"] = data_dict["labels"].clone()
+
+	if ("frame_ids" in data_dict) and (data_dict["frame_ids"] is not None):
+		split_dict["frame_ids"] = data_dict["frame_ids"].clone()
 
 	split_dict["mode"] = "interp"
 	return split_dict
@@ -530,7 +538,8 @@ def compute_loss_all_batches(model,
 	
 	classif_predictions = torch.Tensor([]).to(device)
 	all_test_labels =  torch.Tensor([]).to(device)
-
+	all_sol_y = []
+	all_frame_ids=  []
 	for i in range(n_batches):
 		print("Computing loss... " + str(i))
 		
@@ -539,14 +548,25 @@ def compute_loss_all_batches(model,
 		results  = model.compute_all_losses(batch_dict,
 			n_traj_samples = n_traj_samples, kl_coef = kl_coef)
 
-		if args.classif:
-			n_labels = model.n_labels #batch_dict["labels"].size(-1)
-			n_traj_samples = results["label_predictions"].size(0)
+		#store sol_y and frame ids:
+		all_sol_y.append(results["sol_y"].detach().cpu().numpy())
+		if batch_dict["frame_ids"] is not None:
+			all_frame_ids.append(batch_dict["frame_ids"].detach().cpu().numpy())
 
-			classif_predictions = torch.cat((classif_predictions, 
+
+		#results["label_predicitons"] has shape [n_traj_samples, num_batches, num_tt, num_dim]
+		if args.classif:
+			n_labels = model.n_labels  # batch_dict["labels"].size(-1)
+			n_traj_samples = results["label_predictions"].size(0)
+			# n_classifier_dims = results["label_predictions"].size(-1)
+			classif_predictions = torch.cat((classif_predictions,
 				results["label_predictions"].reshape(n_traj_samples, -1, n_labels)),1)
-			all_test_labels = torch.cat((all_test_labels, 
+			# classif_predictions = torch.cat((classif_predictions,
+			# 								 results["label_predictions"]), 1)
+			all_test_labels = torch.cat((all_test_labels,
 				batch_dict["labels"].reshape(-1, n_labels)),0)
+			# reshaped_labels = batch_dict["labels"].unsqueeze(-1).repeat(1, 1, n_classifier_dims) #now shape is 4,423,4
+			# all_test_labels = torch.cat((all_test_labels, reshaped_labels), 0)
 
 		for key in total.keys(): 
 			if key in results:
@@ -593,12 +613,13 @@ def compute_loss_all_batches(model,
 		
 		if args.dataset == "activity":
 			all_test_labels = all_test_labels.repeat(n_traj_samples,1,1)
-
+			#all_test_labels shape: [n_traj, num_batches*n_tt, num_dim]
 			labeled_tp = torch.sum(all_test_labels, -1) > 0.
-
+			#labeled_tp shape: [n_traj, num_batches*n_tt]
 			all_test_labels = all_test_labels[labeled_tp]
+			# all_test_labels shape: [num_labeled points, num_dim] num_labeled points is # of true vals in labeled_tp
 			classif_predictions = classif_predictions[labeled_tp]
-
+			#classif_predicionts shape [num_labeled points, num_dim]
 			# classif_predictions and all_test_labels are in on-hot-encoding -- convert to class ids
 			_, pred_class_id = torch.max(classif_predictions, -1)
 			_, class_labels = torch.max(all_test_labels, -1)
@@ -606,9 +627,28 @@ def compute_loss_all_batches(model,
 			pred_class_id = pred_class_id.reshape(-1) 
 
 			total["accuracy"] = sk.metrics.accuracy_score(
-					class_labels.cpu().numpy(), 
-					pred_class_id.cpu().numpy())
-	return total
+				class_labels.cpu().numpy(),
+				pred_class_id.cpu().numpy())
+
+		if args.dataset == "mouse_embeddings" or args.dataset == "mouse_keypoints":
+			all_test_labels = all_test_labels.repeat(n_traj_samples, 1, 1)
+			#all_test_labels = all_test_labels.repeat(n_traj_samples, 1, 1, 1)
+			labeled_tp = torch.sum(all_test_labels, -1) > 0.
+
+			all_test_labels = all_test_labels[labeled_tp]
+			classif_predictions = classif_predictions[labeled_tp]
+
+			#classif_predictions and all_test_labels are in on-hot-encoding -- convert to class ids
+			_, pred_class_id = torch.max(classif_predictions, -1) #predicted
+			_, class_labels = torch.max(all_test_labels, -1) #ground truth
+			#class_labels, _  = torch.max(all_test_labels, -1)
+
+			pred_class_id = pred_class_id.reshape(-1) #remove?
+
+			total["accuracy"] = sk.metrics.accuracy_score(
+				class_labels.cpu().numpy(),
+				pred_class_id.cpu().numpy())
+	return total, all_sol_y, all_frame_ids, class_labels, pred_class_id
 
 def check_mask(data, mask):
 	#check that "mask" argument indeed contains a mask for data
