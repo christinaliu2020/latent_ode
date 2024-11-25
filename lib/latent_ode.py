@@ -48,7 +48,7 @@ class LatentODE(VAE_Baseline):
 		self.decoder = decoder
 		self.use_poisson_proc = use_poisson_proc
 
-	def get_reconstruction(self, time_steps_to_predict, truth, truth_time_steps, 
+	def get_reconstruction(self, time_steps_to_predict, truth, truth_time_steps,
 		mask = None, n_traj_samples = 1, run_backwards = True, mode = None):
 
 		if isinstance(self.encoder_z0, Encoder_z0_ODE_RNN) or \
@@ -85,7 +85,15 @@ class LatentODE(VAE_Baseline):
 		assert(not torch.isnan(first_point_enc_aug).any())
 
 		# Shape of sol_y [n_traj_samples, n_samples, n_timepoints, n_latents]
-		sol_y = self.diffeq_solver(first_point_enc_aug, time_steps_to_predict)
+		sol_y = self.diffeq_solver(first_point_enc_aug, time_steps_to_predict) #use sol_y[0] to do clustering, latent states have shape (n_samples, n_timepoints, n_latents).
+																			#latent_states = sol_y.cpu().detach().numpy()
+																			#latent_states = latent_states[0]
+																			#n_samples, n_timepoints, n_latent_dims = latent_states.shape
+																			#latent_states_np.reshape(-1, n_latent_dims)-> (n_samples*n_timepoints, n_latents)
+																			#do some type of clustering, e.g. kmeans
+																							#kmeans = KMeans(n_clusters=4)
+																							#cluster_labels_2d = kmeans.fit_predict(latent_states_2d)
+																			#then compare with batch_dict["labels"].cpu().reshape(-1)
 
 		if self.use_poisson_proc:
 			sol_y, log_lambda_y, int_lambda, _ = self.diffeq_solver.ode_func.extract_poisson_rate(sol_y)
@@ -107,11 +115,11 @@ class LatentODE(VAE_Baseline):
 
 		if self.use_binary_classif:
 			if self.classif_per_tp:
-				all_extra_info["label_predictions"] = self.classifier(sol_y)
+				all_extra_info["label_predictions"] = self.classifier(sol_y) #sol_y has shape [3,4,423,15] -> becomes [3,4,423, 4]
 			else:
 				all_extra_info["label_predictions"] = self.classifier(first_point_enc).squeeze(-1)
 
-		return pred_x, all_extra_info
+		return pred_x, all_extra_info, sol_y
 
 
 	def sample_traj_from_prior(self, time_steps_to_predict, n_traj_samples = 1):
