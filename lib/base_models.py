@@ -37,7 +37,7 @@ class Baseline(nn.Module):
 		use_poisson_proc = False,
 		linear_classifier = False,
 		n_labels = 1,
-		train_classif_w_reconstr = False):
+		train_classif_w_reconstr = False): #changed from False
 		super(Baseline, self).__init__()
 
 		self.input_dim = input_dim
@@ -102,10 +102,12 @@ class Baseline(nn.Module):
 
 		# Condition on subsampled points
 		# Make predictions for all the points
-		pred_x, info = self.get_reconstruction(batch_dict["tp_to_predict"], 
+		pred_x, info, sol_y = self.get_reconstruction(batch_dict["tp_to_predict"],
 			batch_dict["observed_data"], batch_dict["observed_tp"], 
 			mask = batch_dict["observed_mask"], n_traj_samples = n_traj_samples,
 			mode = batch_dict["mode"])
+
+		
 
 		# Compute likelihood of all the points
 		likelihood = self.get_gaussian_likelihood(batch_dict["data_to_predict"], pred_x,
@@ -253,7 +255,7 @@ class VAE_Baseline(nn.Module):
 	def compute_all_losses(self, batch_dict, n_traj_samples = 1, kl_coef = 1.):
 		# Condition on subsampled points
 		# Make predictions for all the points
-		pred_y, info = self.get_reconstruction(batch_dict["tp_to_predict"], 
+		pred_y, info, sol_y = self.get_reconstruction(batch_dict["tp_to_predict"],
 			batch_dict["observed_data"], batch_dict["observed_tp"], 
 			mask = batch_dict["observed_mask"], n_traj_samples = n_traj_samples,
 			mode = batch_dict["mode"])
@@ -333,6 +335,7 @@ class VAE_Baseline(nn.Module):
 		results["ce_loss"] = torch.mean(ce_loss).detach()
 		results["kl_first_p"] =  torch.mean(kldiv_z0).detach()
 		results["std_first_p"] = torch.mean(fp_std).detach()
+		results["sol_y"] = sol_y
 
 		if batch_dict["labels"] is not None and self.use_binary_classif:
 			results["label_predictions"] = info["label_predictions"].detach()
