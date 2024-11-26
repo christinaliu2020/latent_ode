@@ -134,7 +134,7 @@ def parse_datasets(args, device):
 
 	if dataset_name == "mouse_keypoints":
 		embeddings_file = 'data/keypoints/loaded_train_kps.npy'
-		labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
+		labels_file = 'data/calms21 embeddings/train_labels.npy'
 
 		dataset_obj = MouseVideoEmbeddings(embeddings_file, labels_file, split_sequences=True, normalize = False, num_splits=20,  device = device)
 
