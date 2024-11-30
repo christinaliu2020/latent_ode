@@ -56,24 +56,27 @@ def parse_datasets(args, device):
 		train_labels = args.train_labels.split(',')
 		test_embeddings = args.test_embeddings
 		test_labels = args.test_labels
-		#labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
-		#keypoints_file = '/root/SSL_behavior/data/keypoints/loaded_train_kps.npy'
-		keypoints_file = args.keypoints
-		# train_embeddings_file = '/root/SSL_behavior/data/mae_embeddings/train_embeddings_mae.npy'
-		# train_labels_file = 'data/calms21 embeddings/loaded_train_behaviors.npy'
-		# test_embeddings_file = '/root/SSL_behavior/data/mae_embeddings/test_embeddings_mae.npy'
-		# test_labels_file = 'data/calms21 embeddings/loaded_test_behaviors.npy'
-		train_dataset = MouseVideoEmbeddings(train_embeddings, train_labels,
-											 split_sequences=True, do_pca=True,
-											 normalize=True, num_splits=40,
-											 device=device)
-		test_dataset = MouseVideoEmbeddings([test_embeddings], [test_labels],
-											split_sequences=True, do_pca=True,
-											normalize=True, num_splits=40,
-											device=device)
+		all_embeddings = [test_embeddings] + train_embeddings
+		all_labels = [test_labels] + train_labels
 
-		batch_size = min(min(len(train_labels) + len(test_labels), args.batch_size), args.n)
+		# Load and concatenate all embeddings and labels
+		combined_embeddings = np.concatenate([np.load(f) for f in all_embeddings], axis=0)
+		combined_labels = np.concatenate([np.load(f) for f in all_labels], axis=0)
+		#keypoints_file = args.keypoints
+		dataset_obj = MouseVideoEmbeddings([combined_embeddings], [combined_labels], keypoints_file=args.keypoints,
+										   split_sequences=True, do_pca=True, normalize=True,
+										   num_splits=40, device=device, keypoint_window=101)
 
+
+		dataset_size = len(dataset_obj)
+		test_size = int(0.2 * dataset_size)  # First 20% as test set
+		train_size = dataset_size - test_size  # Remaining 80% as train set
+		test_indices = list(range(test_size))  # First 20% of indices
+		train_indices = list(range(test_size, dataset_size))  # Remaining 80% of indices		
+		train_data = Subset(dataset_obj, train_indices)
+		test_data = Subset(dataset_obj, test_indices)
+		
+		batch_size = min(min(len(dataset_obj), args.batch_size), args.n)
 		# if args.keypoints:
 		# 	train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True,
 		# 								  collate_fn=lambda batch: variable_time_collate_fn_embeddings_keypoints(batch, args, device,
@@ -105,15 +108,15 @@ def parse_datasets(args, device):
 		# 	}
 		#
 		# 	return data_objects
-		train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+		train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True,
 									  collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args,
 																								   device,
 																								   data_type="train"))
-		test_dataloader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False,
+		test_dataloader = DataLoader(test_data, batch_size=len(test_data), shuffle=False,
 									 collate_fn=lambda batch: variable_time_collate_fn_embeddings(batch, args,
 																								  device,
 																								  data_type="test"))
-		input_dim = train_dataset[0]['vals'].size(-1)
+		input_dim = train_data[0]['vals'].size(-1)
 		n_labels = args.num_classes
 		#
 		# train_labels = np.load(train_labels_file)
@@ -121,13 +124,14 @@ def parse_datasets(args, device):
 		# all_labels = np.concatenate([train_labels, test_labels])
 		# n_labels = len(np.unique(all_labels))
 		data_objects = {
+			"dataset_obj": dataset_obj,
 			"train_dataloader": utils.inf_generator(train_dataloader),
 			"test_dataloader": utils.inf_generator(test_dataloader),
 			"input_dim": input_dim,
 			"n_train_batches": len(train_dataloader),
 			"n_test_batches": len(test_dataloader),
 			"classif_per_tp": True,
-			"n_labels": n_labels  # Placeholder, adjust if needed
+			"n_labels": n_labels  
 		}
 
 		return data_objects
