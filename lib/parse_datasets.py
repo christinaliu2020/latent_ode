@@ -90,7 +90,7 @@ def parse_datasets(args, device):
 		# 	input_dim = embed_dim + keypoint_dim
 		# 	labels = np.load(labels_file)
 		# 	n_labels = len(np.unique(labels))
-		# 	#
+		# 	
 		# 	# train_labels = np.load(train_labels_file)
 		# 	# test_labels = np.load(test_labels_file)
 		# 	# all_labels = np.concatenate([train_labels, test_labels])
@@ -118,11 +118,6 @@ def parse_datasets(args, device):
 																								  data_type="test"))
 		input_dim = train_data[0]['vals'].size(-1)
 		n_labels = args.num_classes
-		#
-		# train_labels = np.load(train_labels_file)
-		# test_labels = np.load(test_labels_file)
-		# all_labels = np.concatenate([train_labels, test_labels])
-		# n_labels = len(np.unique(all_labels))
 		data_objects = {
 			"dataset_obj": dataset_obj,
 			"train_dataloader": utils.inf_generator(train_dataloader),
