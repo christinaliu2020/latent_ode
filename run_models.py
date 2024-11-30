@@ -317,11 +317,6 @@ if __name__ == '__main__':
 			kl_coef = (1-0.99** (itr // num_batches - wait_until_kl_inc))
 
 		batch_dict = utils.get_next_batch(data_obj["train_dataloader"])
-		#do clustering
-		#nmi = cluster_latent_states(model, batch_dict, args.cluster_method, n_traj_samples = 1)
-
-		#nmi_list.append(nmi)
-
 
 		train_res = model.compute_all_losses(batch_dict, n_traj_samples = 1, kl_coef = kl_coef)
 		train_res["loss"].backward()
@@ -331,10 +326,6 @@ if __name__ == '__main__':
 		n_iters_to_viz = 1
 		if itr % (n_iters_to_viz * num_batches) == 0:
 			with torch.no_grad():
-				#test_batch_dict = utils.get_next_batch(data_obj["test_dataloader"])
-
-				#compute nmi
-				#nmi = cluster_latent_states(model, test_batch_dict, args.cluster_method, n_traj_samples=1)
 
 				test_res, all_sol_y, all_frame_ids, gt_labels, predicted_labels = compute_loss_all_batches(model,
 					data_obj["test_dataloader"], args,
@@ -342,30 +333,6 @@ if __name__ == '__main__':
 					experimentID = experimentID,
 					device = device,
 					n_traj_samples = 1, kl_coef = kl_coef)
-
-				# sol_y = all_sol_y[0][0].reshape(-1,32)
-				# frame_ids = all_frame_ids[0].reshape(-1)
-				# z1 = sol_y[:, 0]
-				# z2 = sol_y[:, 1]
-				#test_labels = np.load('/root/SSL_behavior/data/calms21 embeddings/loaded_test_behaviors.npy')
-				# labels = test_labels[frame_ids]
-				# # Plot the first and second dimensions of sol_y
-				# plt.figure(figsize=(10, 6))
-				# plt.scatter(z1, z2, c=labels, cmap='viridis', s=5)
-				# plt.colorbar(label='Frame IDs')
-				# plt.xlabel('First Dimension of Latent z')
-				# plt.ylabel('Second Dimension of Latent z')
-				# plt.title('Visualization of First and Second Dimensions of Latent z')
-				# plt.grid(True)
-				# epoch = itr//num_batches
-				# s = 'kp plot epoch ' + str(epoch)
-				# plt.savefig(s)
-
-				# sol_y_file = f"/root/SSL_behavior/latent ode saved 64 - 32 v5/sol_y_normalized_epoch{epoch}.npy"
-				# frame_ids_file =  f"/root/SSL_behavior/latent ode saved 64 - 32 v5/frame_ids_normalized_epoch{epoch}.npy"
-				# np.save(sol_y_file, np.concatenate(all_sol_y, axis=0))
-				# np.save(frame_ids_file,
-				# 		np.concatenate(all_frame_ids, axis=0))
 
 				train_loss.append(train_res["loss"])
 				test_loss.append(test_res["loss"])
@@ -389,7 +356,8 @@ if __name__ == '__main__':
 				plt.ylabel('Loss')
 				plt.legend()
 				plt.grid(True)
-				plt.savefig(f'{args.dataset} losses')
+				loss_file = os.path.join(os.path.join(args.save), f"loss.png")
+				plt.savefig(loss_file)
 				plt.close()
 				if "accuracy" in test_res:
 					test_acc.append(test_res["accuracy"])
@@ -400,7 +368,8 @@ if __name__ == '__main__':
 					plt.xlabel('Iteration')
 					plt.ylabel('Accuracy')
 					plt.grid(True)
-					plt.savefig(f'{args.dataset} accuracies')
+					acc_file = os.path.join(os.path.join(args.save), f"test_acc.png")
+					plt.savefig(acc_file)
 					plt.close()
 
 				message = 'Epoch {:04d} [Test seq (cond on sampled tp)] | Loss {:.6f} | Likelihood {:.6f} | KL fp {:.4f} | FP STD {:.4f}|'.format(
