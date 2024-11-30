@@ -48,7 +48,7 @@ class MouseVideoEmbeddings(Dataset):
 
         self.frame_ids = np.arange(len(self.embeddings))
         if do_pca:
-            pca = PCA(n_components=32)
+            pca = PCA(n_components=64)
             self.embeddings = pca.fit_transform(self.embeddings)
 
         self.labels = self.encode_labels(self.labels)
