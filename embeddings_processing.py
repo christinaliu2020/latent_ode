@@ -13,9 +13,16 @@ class MouseVideoEmbeddings(Dataset):
         self.labels = []
 
         for emb_file, label_file in zip(embeddings_file, labels_file):
-            emb = torch.Tensor(np.load(emb_file)).to(device)
+            if isinstance(emb_file, str):
+                emb = torch.Tensor(np.load(emb_file)).to(device)
+            else:
+                emb = torch.Tensor(emb_file).to(device)
             self.embeddings.append(emb)
-            self.labels.extend(np.load(label_file))
+
+            if isinstance(label_file, str):
+                self.labels.extend(np.load(label_file))
+            else:
+                self.labels.extend(label_file)
 
         self.embeddings = torch.cat(self.embeddings, dim=0)
         self.labels = np.array(self.labels)
