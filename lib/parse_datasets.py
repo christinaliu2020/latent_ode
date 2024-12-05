@@ -64,7 +64,7 @@ def parse_datasets(args, device):
 		combined_labels = np.concatenate([np.load(f) for f in all_labels], axis=0)
 		#keypoints_file = args.keypoints
 		dataset_obj = MouseVideoEmbeddings([combined_embeddings], [combined_labels], keypoints_file=args.keypoints,
-										   split_sequences=True, do_pca=True, normalize=True,
+										   split_sequences=True, do_pca=True, normalize=False,
 										   num_splits=40, device=device, keypoint_window=101)
 
 
